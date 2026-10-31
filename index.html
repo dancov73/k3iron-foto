@@ -1,0 +1,220 @@
+<!doctype html>
+<!--
+  K3IRON Foto: carica foto nella libreria del sito dal telefono, proposta B scelta il 31/10/2026.
+  Si apre dal link che la chat dà con sito_link_foto: il permesso sta dopo il #, quindi non arriva a GitHub.
+  Le foto vengono ridisegnate sul telefono: così si rimpiccioliscono e perdono i dati dello scatto, GPS compreso.
+  È una pagina pubblica: contiene solo l'indirizzo della funzione, nessuna chiave. Un clone sta su GitHub Pages, repository
+  k3iron-foto: l'originale è questo, in sito/connettore/pagina.
+-->
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>K3IRON · Foto</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500&display=swap">
+<style>
+  :root { --bg: #fff; --ink: #171717; --muted: #5d6873; --line: #c9ced3; --tile: #e8ecef; --orange: #ff9900; --blue: #088adc; --ok: #1d8a4e; --err: #c0392b; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #171717; --ink: #f1f3f5; --muted: #9aa5b0; --line: #3a4148; --tile: #262b30; --ok: #4cc38a; --err: #ff7b6b; } }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; display: flex; flex-direction: column; min-height: 100dvh; background: var(--bg); color: var(--ink);
+         font: 16px/1.4 Rubik, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 18px 16px 12px; font-size: 20px; font-weight: 500; }
+  header b { color: var(--orange); font-weight: 500; }
+  main { flex: 1; padding: 0 16px; display: flex; flex-direction: column; gap: 12px; max-width: 520px; width: 100%; margin: 0 auto; }
+  footer { padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); position: sticky; bottom: 0; background: var(--bg);
+           max-width: 520px; width: 100%; margin: 0 auto; }
+  #griglia { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .tessera { position: relative; aspect-ratio: 1; border-radius: 10px; overflow: hidden; background: var(--tile); }
+  .tessera img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .tessera.carico img, .tessera.ok img { opacity: .55; }
+  .togli { position: absolute; top: 4px; right: 4px; width: 32px; height: 32px; border: 0; border-radius: 50%; padding: 0; cursor: pointer;
+           background: #171717cc; color: #fff; font: inherit; font-size: 18px; line-height: 32px; }
+  .segno { position: absolute; left: 6px; bottom: 6px; right: 6px; border-radius: 7px; padding: 3px 6px; font-size: 12px; color: #fff; background: #171717cc; }
+  .tessera.ok .segno { background: var(--ok); }
+  .tessera.errore .segno { background: var(--err); }
+  #aggiungi { aspect-ratio: 1; border: 1px dashed var(--muted); border-radius: 10px; display: flex; flex-direction: column; align-items: center;
+              justify-content: center; gap: 2px; color: var(--muted); font-size: 13px; cursor: pointer; text-align: center; padding: 4px; }
+  #aggiungi span { font-size: 28px; line-height: 1; }
+  #aggiungi:focus-within { outline: 2px solid var(--blue); }
+  #scegli { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  p { margin: 0; }
+  #nota { margin-top: auto; padding-bottom: 4px; font-size: 13px; color: var(--muted); }
+  #messaggio { font-size: 15px; min-height: 1.4em; }
+  #messaggio.errore { color: var(--err); }
+  #messaggio.ok { color: var(--ok); }
+  #carica { width: 100%; border: 0; border-radius: 12px; padding: 15px 12px; background: var(--blue); color: #fff; font: inherit; font-weight: 500; font-size: 17px; cursor: pointer; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header><b>K3</b>IRON · Foto</header>
+<main>
+  <div id="griglia">
+    <label id="aggiungi"><input id="scegli" type="file" accept="image/*" multiple><span aria-hidden="true">+</span>Aggiungi</label>
+  </div>
+  <p id="messaggio" role="status"></p>
+  <p id="nota">Le foto vengono rimpicciolite e perdono la posizione GPS.</p>
+</main>
+<footer><button id="carica" type="button" hidden></button></footer>
+<script>
+  const FUNZIONE = 'https://lfctbribuafafwderqqh.supabase.co/functions/v1/sito/foto'
+  const LATO_MAX = 2000
+  const QUALITA = 0.85
+  const QUANTE_MAX = 20
+
+  const griglia = document.getElementById('griglia')
+  const aggiungi = document.getElementById('aggiungi')
+  const scegli = document.getElementById('scegli')
+  const messaggio = document.getElementById('messaggio')
+  const carica = document.getElementById('carica')
+
+  const permesso = new URLSearchParams(location.hash.slice(1)).get('t') ?? ''
+  const scadenza = Number(permesso.split('.')[0])
+  let scelte = [] // { file, url, stato: 'pronta' | 'carico' | 'ok' | 'errore', nota }
+  let inCorso = false
+
+  function avvisa(testo, tipo = '') {
+    messaggio.textContent = testo
+    messaggio.className = tipo
+  }
+
+  function scaduto() {
+    return !permesso || !(scadenza > Date.now())
+  }
+
+  function disegna() {
+    griglia.querySelectorAll('.tessera').forEach((t) => t.remove())
+    for (const scelta of scelte) {
+      const tessera = document.createElement('div')
+      tessera.className = `tessera ${scelta.stato}`
+      const img = document.createElement('img')
+      img.src = scelta.url
+      img.alt = ''
+      tessera.append(img)
+      if (['pronta', 'errore'].includes(scelta.stato) && !inCorso) {
+        const togli = document.createElement('button')
+        togli.type = 'button'
+        togli.className = 'togli'
+        togli.textContent = '×'
+        togli.setAttribute('aria-label', 'Togli questa foto')
+        togli.onclick = () => {
+          URL.revokeObjectURL(scelta.url)
+          scelte = scelte.filter((s) => s !== scelta)
+          disegna()
+        }
+        tessera.append(togli)
+      }
+      if (scelta.stato !== 'pronta') {
+        const segno = document.createElement('div')
+        segno.className = 'segno'
+        segno.textContent = scelta.nota
+        tessera.append(segno)
+      }
+      griglia.insertBefore(tessera, aggiungi)
+    }
+    const daCaricare = scelte.filter((s) => s.stato !== 'ok' && s.stato !== 'carico').length
+    carica.hidden = daCaricare === 0 || inCorso
+    carica.textContent = daCaricare === 1 ? 'Carica 1 foto' : `Carica ${daCaricare} foto`
+    aggiungi.hidden = inCorso || scelte.length >= QUANTE_MAX
+  }
+
+  /** La ridisegna su una tela: più piccola e senza dati dello scatto. Il verso giusto lo applica il browser. */
+  async function ridisegna(file) {
+    const immagine = await createImageBitmap(file, { imageOrientation: 'from-image' })
+    const scala = Math.min(1, LATO_MAX / Math.max(immagine.width, immagine.height))
+    const tela = document.createElement('canvas')
+    tela.width = Math.round(immagine.width * scala)
+    tela.height = Math.round(immagine.height * scala)
+    const disegno = tela.getContext('2d')
+    const png = file.type === 'image/png'
+    if (!png) {
+      disegno.fillStyle = '#fff'
+      disegno.fillRect(0, 0, tela.width, tela.height)
+    }
+    disegno.drawImage(immagine, 0, 0, tela.width, tela.height)
+    immagine.close()
+    return new Promise((fatto, errore) => tela.toBlob(
+      (blob) => (blob ? fatto(blob) : errore(new Error('Non si apre'))),
+      png ? 'image/png' : 'image/jpeg',
+      QUALITA,
+    ))
+  }
+
+  async function spedisci(scelta, numero) {
+    let blob
+    try {
+      blob = await ridisegna(scelta.file)
+    } catch {
+      throw new Error('Non si apre')
+    }
+    const risposta = await fetch(FUNZIONE, {
+      method: 'POST',
+      headers: { 'content-type': blob.type, 'x-sito-foto': permesso, 'x-foto-nome': `k3iron-${Date.now()}-${numero}` },
+      body: blob,
+    })
+    if (risposta.status === 401) {
+      const scaduta = new Error('Scaduto')
+      scaduta.scaduto = true
+      throw scaduta
+    }
+    if (!risposta.ok) throw new Error('Non caricata')
+  }
+
+  scegli.addEventListener('change', () => {
+    const nuove = [...scegli.files].slice(0, QUANTE_MAX - scelte.length)
+    if (nuove.length < scegli.files.length) avvisa(`Al massimo ${QUANTE_MAX} foto alla volta.`, 'errore')
+    else avvisa('')
+    scelte.push(...nuove.map((file) => ({ file, url: URL.createObjectURL(file), stato: 'pronta', nota: '' })))
+    scegli.value = ''
+    disegna()
+  })
+
+  carica.addEventListener('click', async () => {
+    if (scaduto()) return avvisa('Il link è scaduto: chiedine uno nuovo alla chat.', 'errore')
+    inCorso = true
+    avvisa('')
+    const coda = scelte.filter((s) => s.stato === 'pronta' || s.stato === 'errore')
+    for (const s of coda) {
+      s.stato = 'pronta'
+      s.nota = ''
+    }
+    let numero = 0
+    for (const scelta of coda) {
+      numero += 1
+      scelta.stato = 'carico'
+      scelta.nota = 'Carico…'
+      avvisa(`Foto ${numero} di ${coda.length}`)
+      disegna()
+      try {
+        await spedisci(scelta, numero)
+        scelta.stato = 'ok'
+        scelta.nota = 'Caricata'
+      } catch (e) {
+        scelta.stato = 'errore'
+        scelta.nota = e instanceof TypeError ? 'Rete assente' : e.message
+        if (e.scaduto) {
+          inCorso = false
+          disegna()
+          return avvisa('Il link è scaduto: chiedine uno nuovo alla chat.', 'errore')
+        }
+      }
+    }
+    inCorso = false
+    const male = scelte.filter((s) => s.stato === 'errore').length
+    const bene = scelte.filter((s) => s.stato === 'ok').length
+    if (male) avvisa(`${male === 1 ? '1 foto non è stata caricata' : `${male} foto non sono state caricate`}: riprova o toglila.`, 'errore')
+    else avvisa(`${bene === 1 ? '1 foto caricata' : `${bene} foto caricate`}. Torna alla chat e scrivi «fatto».`, 'ok')
+    disegna()
+  })
+
+  if (scaduto()) {
+    aggiungi.hidden = true
+    avvisa(permesso ? 'Il link è scaduto: chiedine uno nuovo alla chat.' : 'Apri questa pagina dal link che ti dà la chat.', 'errore')
+  }
+</script>
+</body>
+</html>
